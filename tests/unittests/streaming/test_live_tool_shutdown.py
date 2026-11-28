@@ -545,6 +545,147 @@ async def test_non_blocking_tool_stops_when_the_live_turn_ends():
   assert cancelled.is_set()
 
 
+@pytest.mark.asyncio
+async def test_tool_that_returns_once_still_receives_live_input():
+  """A tool that reads the user's input and answers once gets that input.
+
+  Reading the live input stream is not tied to yielding several results: a
+  tool can watch what the user sends and answer with a single value.
+  """
+  seen: list[bytes | None] = []
+
+  async def describe_scene(input_stream: LiveRequestQueue) -> dict[str, str]:
+    request = await input_stream.get()
+    seen.append(request.blob.data if request.blob else None)
+    return {'scene': 'described'}
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([_call('describe_scene')]),
+      tools=[describe_scene],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+
+  events: list[Event] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        events.append(event)
+        if event.get_function_calls():
+          # The stream carries what the user sends while the tool runs, so
+          # this speaks once the call is on its way.
+          live_request_queue.send_realtime(
+              types.Blob(data=b'what is this', mime_type='audio/pcm')
+          )
+        if any(
+            response.name == 'describe_scene'
+            for response in event.get_function_responses()
+        ):
+          return
+        if len(events) >= _MAX_EVENTS:
+          return
+
+  try:
+    await asyncio.wait_for(_consume(), timeout=10.0)
+  except asyncio.TimeoutError:
+    pass
+
+  assert seen == [b'what is this']
+  assert [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+  ] == [{'scene': 'described'}]
+
+
+@pytest.mark.asyncio
+async def test_finished_tool_stops_receiving_live_input():
+  """A tool that has answered no longer collects the user's live input.
+
+  Every live request is copied into each registered stream, so a stream left
+  behind after the call finished grows for the rest of the session.
+  """
+  contexts: list[InvocationContext] = []
+  answered = asyncio.Event()
+
+  async def describe_scene(
+      tool_context: ToolContext, input_stream: LiveRequestQueue
+  ) -> dict[str, str]:
+    contexts.append(tool_context._invocation_context)
+    await input_stream.get()
+    return {'scene': 'described'}
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([_call('describe_scene')]),
+      tools=[describe_scene],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      seen = 0
+      async for event in agen:
+        seen += 1
+        if event.get_function_calls():
+          live_request_queue.send_realtime(
+              types.Blob(data=b'what is this', mime_type='audio/pcm')
+          )
+        if any(
+            response.name == 'describe_scene'
+            for response in event.get_function_responses()
+        ):
+          answered.set()
+        if answered.is_set():
+          # The user keeps talking after the tool has answered.
+          for _ in range(25):
+            live_request_queue.send_realtime(
+                types.Blob(data=b'...', mime_type='audio/pcm')
+            )
+            await asyncio.sleep(0.005)
+          return
+        if seen >= _MAX_EVENTS:
+          return
+
+  try:
+    await asyncio.wait_for(_consume(), timeout=10.0)
+  except asyncio.TimeoutError:
+    pass
+
+  assert contexts, 'the tool never ran'
+  assert not any(
+      active.tool_name == 'describe_scene'
+      for active in (contexts[0]._active_background_tools or {}).values()
+  ), (
+      'the finished call is still registered, so every live request the user'
+      ' sends for the rest of the session is copied into its stream'
+  )
+
+
 def _late_tool_agents(tool: Any, call_name: str) -> Agent:
   """A root agent that calls ``tool`` and then hands off to a sub agent."""
 

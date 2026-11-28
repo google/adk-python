@@ -153,8 +153,10 @@ def _pending_response() -> dict[str, str]:
   }
 
 
-def _new_input_stream(tool: FunctionTool) -> LiveRequestQueue | None:
-  """Returns a new input stream if the streaming tool takes one, else None."""
+def _new_input_stream(tool: BaseTool | None) -> LiveRequestQueue | None:
+  """Returns a new input stream if the tool takes one, else None."""
+  if not isinstance(tool, FunctionTool):
+    return None
   parameter = inspect.signature(tool.func).parameters.get('input_stream')
   if parameter is not None and _is_live_request_queue_annotation(parameter):
     return LiveRequestQueue()
@@ -473,6 +475,7 @@ async def _launch_non_blocking_call_live(
           tool_name=tool.name,
           function_call_id=function_call_id,
           task=task,
+          input_stream=_new_input_stream(tool),
       )
   )
 
@@ -568,17 +571,12 @@ def _launch_function_call_live(
 
   task = asyncio.create_task(_background_task())
   tool = tools_dict.get(tool_name)
-  is_streaming = _is_streaming_tool(tool)
   entry = ActiveBackgroundTool(
       tool_name=tool_name,
       function_call_id=function_call_id,
       task=task,
-      is_generator=is_streaming,
-      input_stream=(
-          _new_input_stream(cast('FunctionTool', tool))
-          if is_streaming
-          else None
-      ),
+      is_generator=_is_streaming_tool(tool),
+      input_stream=_new_input_stream(tool),
   )
   invocation_context._add_background_tool(entry)
 
