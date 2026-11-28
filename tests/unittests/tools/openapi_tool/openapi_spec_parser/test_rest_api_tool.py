@@ -326,6 +326,73 @@ class TestRestApiToolWithJsonSchema:
     }
 
 
+async def test_toolset_keeps_colliding_parameters_in_their_locations():
+  """A deduplicated argument cannot shadow an existing suffixed argument."""
+
+  def handle_request(request):
+    return httpx.Response(
+        200,
+        json={
+            "query": dict(request.url.params),
+            "id_header": request.headers.get("id"),
+            "body": json.loads(request.content),
+        },
+    )
+
+  toolset = OpenAPIToolset(
+      spec_dict={
+          "openapi": "3.0.0",
+          "info": {"title": "Collision test", "version": "1"},
+          "servers": [{"url": "https://example.com"}],
+          "paths": {
+              "/items": {
+                  "post": {
+                      "operationId": "create_item",
+                      "parameters": [
+                          {
+                              "name": name,
+                              "in": location,
+                              "schema": {"type": "string"},
+                          }
+                          for name, location in [
+                              ("id", "query"),
+                              ("id", "header"),
+                              ("id_0", "query"),
+                          ]
+                      ],
+                      "requestBody": {
+                          "content": {
+                              "application/json": {
+                                  "schema": {
+                                      "type": "object",
+                                      "properties": {"id": {"type": "string"}},
+                                  }
+                              }
+                          }
+                      },
+                      "responses": {"200": {"description": "OK"}},
+                  }
+              }
+          },
+      },
+      httpx_client_factory=lambda: httpx.AsyncClient(
+          transport=httpx.MockTransport(handle_request)
+      ),
+  )
+  tool = (await toolset.get_tools())[0]
+
+  result = await tool.run_async(
+      args={"id": "query", "id_0": "suffix", "id_1": "header", "id_2": "body"},
+      tool_context=None,
+  )
+
+  assert result == {
+      "query": {"id": "query", "id_0": "suffix"},
+      "id_header": "header",
+      "body": {"id": "body"},
+  }
+
+
 class TestRestApiTool:
 
   def test_init(
