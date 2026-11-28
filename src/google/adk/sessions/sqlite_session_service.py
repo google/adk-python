@@ -571,7 +571,13 @@ class SqliteSessionService(BaseSessionService):
 
   @asynccontextmanager
   async def _read_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-    """Reads session rows, events, and scoped state from one SQLite snapshot."""
+    """Reads session rows, events, and scoped state from one SQLite snapshot.
+
+    The service leaves SQLite in its default rollback journal mode. In that
+    mode an append on another connection waits, up to the busy timeout, for
+    this transaction to end before it commits. With WAL enabled, the append
+    commits right away and this snapshot does not see it.
+    """
     async with self._get_db_connection() as db:
       await db.execute("BEGIN")
       try:
