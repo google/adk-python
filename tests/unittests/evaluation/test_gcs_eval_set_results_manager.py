@@ -295,3 +295,34 @@ class TestGcsEvalSetResultsManager:
     )
 
     assert retrieved.multi_run_case_summaries == summaries
+
+  @pytest.mark.parametrize(
+      "extra_name",
+      [
+          "test_app/evals/eval_history_backup/ghost.evalset_result.json",
+          "test_app/evals/eval_history/nested/ghost.evalset_result.json",
+          "test_app/evals/eval_history/",
+          "test_app/evals/eval_history/README.txt",
+          "test_app/evals/eval_history/almost.evalset_result.json.bak",
+          "other_app/evals/eval_history/ghost.evalset_result.json",
+      ],
+  )
+  def test_listing_only_direct_eval_files(
+      self,
+      gcs_eval_set_results_manager: GcsEvalSetResultsManager,
+      extra_name: str,
+  ) -> None:
+    manager = gcs_eval_set_results_manager
+    expected_names = [
+        "test_app/evals/eval_history/a.evalset_result.json",
+        "test_app/evals/eval_history/z.evalset_result.json",
+    ]
+    for name in [*reversed(expected_names), extra_name]:
+      manager.bucket.blob(name).upload_from_string("{}")
+
+    ids = manager.list_eval_set_results("test_app")
+
+    assert ids == ["a", "z"]
+    assert [
+        manager._get_eval_set_result_blob_name("test_app", id_) for id_ in ids
+    ] == expected_names
