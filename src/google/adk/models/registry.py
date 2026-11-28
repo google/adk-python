@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+_OPENAI_PREFIXES = {'openai': 'OpenAIResponsesLlm', 'openaillm': 'OpenAILlm'}
+
 _LazyEntry = tuple[str, str]
 _llm_registry_dict: dict[str, type[BaseLlm] | _LazyEntry] = {}
 
@@ -95,7 +97,7 @@ class LLMRegistry:
   @staticmethod
   def _match_prefix(prefix: str, class_name: str) -> bool:
     """Checks if a prefix matches a class name."""
-    prefix_lower = prefix.lower()
+    prefix_lower = _OPENAI_PREFIXES.get(prefix.lower(), prefix).lower()
     norm_class_name = class_name.lower()
     if norm_class_name.endswith('llm'):
       norm_class_name = norm_class_name[:-3]
@@ -158,6 +160,10 @@ class LLMRegistry:
     # Support [model_class]:model_name format to override resolution
     prefix, _ = LLMRegistry._parse_model(model)
     if prefix:
+      if class_name := _OPENAI_PREFIXES.get(prefix.lower()):
+        from ..integrations import openai
+
+        return cast('type[BaseLlm]', getattr(openai, class_name))
       for regex, entry in list(_llm_registry_dict.items()):
         class_name = entry[1] if isinstance(entry, tuple) else entry.__name__
         if LLMRegistry._match_prefix(prefix, class_name):

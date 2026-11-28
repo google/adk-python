@@ -30,6 +30,7 @@ from .registry import LLMRegistry
 if TYPE_CHECKING:
   from google.adk.integrations.oci._oci_genai_llm import OCIGenAILlm
   from google.adk.integrations.openai import OpenAILlm
+  from google.adk.integrations.openai import OpenAIResponsesLlm
 
   from ._fallback_model import FallbackModel
   from .anthropic_llm import AnthropicGenerateContentConfig
@@ -77,9 +78,9 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     # order anyway: claude-opus-4 and claude-4-opus are both real.
     'Claude': ([r'claude-.*'], 'anthropic_llm'),
     'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
-    'OpenAILlm': (
+    'OpenAIResponsesLlm': (
         [r'gpt-.*', r'o\d+-.*'],
-        'google.adk.integrations.openai._openai_llm',
+        'google.adk.integrations.openai._openai_responses_llm',
     ),
     'LiteLlm': (
         [
@@ -126,6 +127,7 @@ for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
 _OTHER_LAZY_IMPORTS: dict[str, str] = {
     'AnthropicGenerateContentConfig': 'anthropic_llm',
     'FallbackModel': '_fallback_model',
+    'OpenAILlm': 'google.adk.integrations.openai._openai_llm',
 }
 
 
