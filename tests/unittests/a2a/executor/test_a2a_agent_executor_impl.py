@@ -513,6 +513,7 @@ class TestA2aAgentExecutor:
         if hasattr(call.args[0], "status")
     ]
     assert _compat.TS_FAILED not in states
+    assert states[-1] == _compat.TS_CANCELED
 
   @pytest.mark.asyncio
   async def test_execute_with_exception_handling(self):
