@@ -27,6 +27,7 @@ ordinary ``before_model_callback``, ``after_model_callback``, and
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -69,6 +70,63 @@ USER_AGENT = f'adk-model-armor-plugin google-adk/{version.__version__}'
 # Model Armor skips filters past 65,536 tokens (~1 token/char worst case).
 _MAX_TOOL_OUTPUT_CHARS = 65_536
 _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS = 4_096
+# Streamed text screened again, as context, together with each new chunk.
+_STREAM_CONTEXT_CHARS = 4_096
+
+
+@dataclasses.dataclass
+class _OutputStream:
+  """Screening state of one streamed model call."""
+
+  # (original text, text delivered to the caller) of the latest chunks: enough
+  # chunks to cover the last ``_STREAM_CONTEXT_CHARS`` of original text.
+  recent_chunks: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+  withheld: bool = False
+
+  def remember(self, original: str, delivered: str) -> None:
+    self.recent_chunks.append((original, delivered))
+    # Drop the oldest chunk only while the newer ones still cover the window.
+    while (
+        len(self.recent_chunks) > 1
+        and sum(len(o) for o, _ in self.recent_chunks[1:])
+        >= _STREAM_CONTEXT_CHARS
+    ):
+      self.recent_chunks.pop(0)
+
+  def context(self) -> tuple[str, Optional[str]]:
+    """Returns the last ``_STREAM_CONTEXT_CHARS`` of streamed text.
+
+    Returns ``(original, delivered)``: the original text to screen as context,
+    and the text the caller received for it. The window is a character suffix,
+    so a long chunk is cut, not dropped. A cut chunk that was delivered
+    unchanged is cut the same way in both. A cut chunk that was delivered
+    de-identified is kept whole when it fits in the window size; a longer one
+    is cut and ``delivered`` is ``None`` (unknown), since the cut point in the
+    de-identified text is unknown.
+    """
+    originals: list[str] = []
+    delivered: list[str] = []
+    aligned = True
+    budget = _STREAM_CONTEXT_CHARS
+    for original, shown in reversed(self.recent_chunks):
+      if budget <= 0:
+        break
+      if len(original) > budget:
+        if original == shown:
+          originals.append(original[-budget:])
+          delivered.append(shown[-budget:])
+        elif len(original) <= _STREAM_CONTEXT_CHARS:
+          originals.append(original)
+          delivered.append(shown)
+        else:
+          originals.append(original[-budget:])
+          aligned = False
+      else:
+        originals.append(original)
+        delivered.append(shown)
+      budget -= len(original)
+    original_text = ''.join(reversed(originals))
+    return original_text, ''.join(reversed(delivered)) if aligned else None
 
 
 class ModelArmorPlugin(BasePlugin):
@@ -103,6 +161,8 @@ class ModelArmorPlugin(BasePlugin):
         config.response_template_name,
         config.tool_output_template_name,
     )
+    # Streamed (partial) output state, per model call in flight.
+    self._output_streams: dict[tuple[str, str], _OutputStream] = {}
 
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
@@ -144,7 +204,18 @@ class ModelArmorPlugin(BasePlugin):
     if not self._config.response_template_name:
       return None
 
+    stream_key = (callback_context.invocation_id, callback_context.agent_name)
+    if llm_response.partial:
+      return await self._screen_partial_output(
+          stream_key, llm_response, self._config.response_template_name
+      )
     text = _extract_response_text(llm_response)
+    if text or llm_response.turn_complete:
+      # A final response with text (or the end of the turn) ends the stream of
+      # this model call; the full text is screened on its own below. Other
+      # non-partial events, such as a finished input transcription in a live
+      # session, leave the stream state as it is.
+      self._output_streams.pop(stream_key, None)
     if not text:
       return None
 
@@ -165,6 +236,66 @@ class ModelArmorPlugin(BasePlugin):
         direction='output',
         blocked_message=self._config.output_blocked_message,
     )
+
+  async def after_run_callback(self, *, invocation_context: Any) -> None:
+    """Drops streaming state of a run whose stream ended without a final."""
+    invocation_id = invocation_context.invocation_id
+    for key in [k for k in self._output_streams if k[0] == invocation_id]:
+      del self._output_streams[key]
+
+  async def _screen_partial_output(
+      self,
+      stream_key: tuple[str, str],
+      llm_response: LlmResponse,
+      template_name: str,
+  ) -> Optional[LlmResponse]:
+    """Screens a streamed chunk together with the text streamed before it.
+
+    Each partial response carries only a delta, so screening chunks one by one
+    misses content split across chunks. Each chunk is screened with the last
+    ``_STREAM_CONTEXT_CHARS`` characters of the text streamed before it (a
+    long earlier chunk is cut, not dropped), which catches split content and
+    keeps every call bounded. Chunks already delivered
+    cannot be recalled: once the text matches (or screening fails and
+    failures block), the text of this and every later partial response of the
+    model call is withheld. With ``deidentify_sensitive_data``, a chunk whose
+    de-identified text leaves the already delivered text unchanged is
+    delivered de-identified, as before. The final, non-partial response is
+    still screened in full.
+    """
+    text = _extract_response_text(llm_response)
+    if not text:
+      return None
+    stream = self._output_streams.setdefault(stream_key, _OutputStream())
+    if stream.withheld:
+      return _without_text(llm_response)
+
+    context, delivered = stream.context()
+    try:
+      result = await self._sanitize_model_response(
+          context + text, template_name
+      )
+    except Exception:  # pylint: disable=broad-except
+      logger.exception('Model Armor streamed output screening call failed.')
+      if self._config.block_on_screening_failure:
+        return _withhold(stream, llm_response)
+      stream.remember(text, text)
+      return None
+
+    deidentified_text = self._deidentified_text(result, direction='output')
+    if deidentified_text is not None:
+      if delivered is None or not deidentified_text.startswith(delivered):
+        # The finding spans text the caller already has (or the context cannot
+        # be matched with the text already delivered).
+        return _withhold(stream, llm_response)
+      shown = deidentified_text[len(delivered) :]
+      stream.remember(text, shown)
+      return _deidentified_response(llm_response, shown)
+
+    if self._should_block(result, direction='output'):
+      return _withhold(stream, llm_response)
+    stream.remember(text, text)
+    return None
 
   @property
   def client(self) -> modelarmor_v1.ModelArmorAsyncClient:
@@ -436,6 +567,32 @@ def _deidentified_response(llm_response: LlmResponse, text: str) -> LlmResponse:
   response.custom_metadata = {
       **(response.custom_metadata or {}),
       'model_armor_deidentified': True,
+  }
+  return response
+
+
+def _withhold(stream: _OutputStream, llm_response: LlmResponse) -> LlmResponse:
+  """Withholds the text of this and every later partial of ``stream``."""
+  stream.withheld = True
+  stream.recent_chunks.clear()
+  return _without_text(llm_response)
+
+
+def _without_text(llm_response: LlmResponse) -> LlmResponse:
+  """Returns a copy of a partial ``llm_response`` with its text withheld."""
+  response = llm_response.model_copy(deep=True)
+  transcription = response.output_transcription
+  if transcription and transcription.text:
+    transcription.text = ''
+  if response.content:
+    response.content.parts = [
+        part
+        for part in response.content.parts or []
+        if not (part.text and not part.thought)
+    ]
+  response.custom_metadata = {
+      **(response.custom_metadata or {}),
+      'model_armor_blocked': True,
   }
   return response
 

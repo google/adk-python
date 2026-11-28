@@ -1211,3 +1211,284 @@ async def test_tool_output_media_alongside_text_screens_only_text():
       ('input', '{"summary": "up 3%"}'),
       ('input', 'part text'),
   ]
+
+
+def _stream_context(invocation_id: str = 'inv-1') -> mock.Mock:
+  return mock.Mock(invocation_id=invocation_id, agent_name='agent')
+
+
+def _partial(text: str) -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text=text)]),
+      partial=True,
+  )
+
+
+def _matching_client(needle: str) -> mock.Mock:
+  """A fake SDK client that reports a match when ``needle`` is in the text."""
+
+  async def sanitize_model_response(request):
+    found = needle in request.model_response_data.text
+    return modelarmor_v1.SanitizeModelResponseResponse(
+        sanitization_result=_sanitization_result(match=found)
+    )
+
+  client = mock.Mock()
+  client.sanitize_model_response = mock.AsyncMock(
+      side_effect=sanitize_model_response
+  )
+  return client
+
+
+def _shown_text(response: Optional[LlmResponse], original: LlmResponse) -> str:
+  """The text the caller receives: the replacement, else the original."""
+  shown = response or original
+  if not shown.content or not shown.content.parts:
+    return ''
+  return ''.join(part.text or '' for part in shown.content.parts)
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_split_across_chunks_is_withheld():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+  context = _stream_context()
+  chunks = ['The password is hun', 'ter2, keep it safe.', ' Anything else?']
+
+  shown = []
+  for chunk in chunks:
+    original = _partial(chunk)
+    response = await plugin.after_model_callback(
+        callback_context=context, llm_response=original
+    )
+    shown.append(_shown_text(response, original))
+
+  assert shown == ['The password is hun', '', '']
+  assert 'hunter2' not in ''.join(shown)
+  assert _screened(client) == [
+      ('output', 'The password is hun'),
+      ('output', 'The password is hunter2, keep it safe.'),
+  ]
+
+  final = _text_response(''.join(chunks))
+  response = await plugin.after_model_callback(
+      callback_context=context, llm_response=final
+  )
+  assert _shown_text(response, final) == 'output blocked'
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_state_resets_after_final_response():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+  context = _stream_context()
+
+  await plugin.after_model_callback(
+      callback_context=context, llm_response=_partial('hunter2')
+  )
+  await plugin.after_model_callback(
+      callback_context=context, llm_response=_text_response('hunter2')
+  )
+  # The next model call of the same invocation streams from scratch.
+  response = await plugin.after_model_callback(
+      callback_context=context, llm_response=_partial('All good.')
+  )
+
+  assert response is None
+  assert _screened(client)[-1] == ('output', 'All good.')
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_screening_failure_withholds_when_blocking():
+  plugin, _ = _plugin(raises=True)
+  original = _partial('some text')
+
+  response = await plugin.after_model_callback(
+      callback_context=_stream_context(), llm_response=original
+  )
+
+  assert response is not None
+  assert response.partial
+  assert _shown_text(response, original) == ''
+  assert response.custom_metadata == {'model_armor_blocked': True}
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_screening_failure_passes_when_fail_open():
+  plugin, _ = _plugin(raises=True, block_on_screening_failure=False)
+
+  response = await plugin.after_model_callback(
+      callback_context=_stream_context(), llm_response=_partial('some text')
+  )
+
+  assert response is None
+
+
+@pytest.mark.asyncio
+async def test_after_run_drops_streaming_state():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+  await plugin.after_model_callback(
+      callback_context=_stream_context('inv-1'), llm_response=_partial('abc')
+  )
+  await plugin.after_model_callback(
+      callback_context=_stream_context('inv-2'),
+      llm_response=_partial('hunter2'),
+  )
+
+  await plugin.after_run_callback(invocation_context=_stream_context('inv-1'))
+  await plugin.after_run_callback(invocation_context=_stream_context('inv-2'))
+
+  assert not plugin._output_streams
+
+
+def _deidentifying_client(secret: str, replacement: str) -> mock.Mock:
+  """A fake SDK client whose SDP filter de-identifies ``secret``."""
+
+  async def sanitize_model_response(request):
+    text = request.model_response_data.text
+    if secret not in text:
+      result = _sanitization_result()
+    else:
+      result = _sdp_match_result(
+          deidentified_text=text.replace(secret, replacement)
+      )
+    return modelarmor_v1.SanitizeModelResponseResponse(
+        sanitization_result=result
+    )
+
+  client = mock.Mock()
+  client.sanitize_model_response = mock.AsyncMock(
+      side_effect=sanitize_model_response
+  )
+  return client
+
+
+async def _stream(plugin, chunks, context=None) -> list[str]:
+  context = context or _stream_context()
+  shown = []
+  for chunk in chunks:
+    original = _partial(chunk)
+    response = await plugin.after_model_callback(
+        callback_context=context, llm_response=original
+    )
+    shown.append(_shown_text(response, original))
+  return shown
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_is_deidentified_chunk_by_chunk():
+  client = _deidentifying_client('123-45-6789', '[SSN]')
+  plugin = ModelArmorPlugin(
+      config=_config(deidentify_sensitive_data=True), client=client
+  )
+
+  shown = await _stream(
+      plugin, ['Hello. ', 'My SSN is 123-45-6789.', ' Thanks.', ' Bye.']
+  )
+
+  assert shown == ['Hello. ', 'My SSN is [SSN].', ' Thanks.', ' Bye.']
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_split_finding_is_withheld_when_deidentifying():
+  client = _deidentifying_client('123-45-6789', '[SSN]')
+  plugin = ModelArmorPlugin(
+      config=_config(deidentify_sensitive_data=True), client=client
+  )
+
+  shown = await _stream(plugin, ['My SSN is 123-4', '5-6789.', ' Thanks.'])
+
+  # The first half was already delivered and cannot be recalled; the rest of
+  # the stream is withheld and the final response carries the full,
+  # de-identified text.
+  assert shown == ['My SSN is 123-4', '', '']
+  final = _text_response('My SSN is 123-45-6789. Thanks.')
+  response = await plugin.after_model_callback(
+      callback_context=_stream_context(), llm_response=final
+  )
+  assert _shown_text(response, final) == 'My SSN is [SSN]. Thanks.'
+
+
+@pytest.mark.asyncio
+async def test_long_stream_screens_bounded_context():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+  chunks = ['x' * 49 + ' '] * 1_000 + ['The password is hun', 'ter2.']
+
+  shown = await _stream(plugin, chunks)
+
+  screened = [text for _, text in _screened(client)]
+  assert len(screened) == len(chunks)
+  # Every call carries at most the context window plus the new chunk, so the
+  # total grows linearly with the stream instead of quadratically.
+  assert max(len(text) for text in screened) <= 4_096 + 50
+  assert sum(len(text) for text in screened) <= len(chunks) * (4_096 + 50)
+  assert shown[-2:] == ['The password is hun', '']
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_split_after_oversized_chunk_is_withheld():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+
+  shown = await _stream(plugin, ['x' * 4_096 + 'hun', 'ter2', ' more'])
+
+  # The window keeps the last 4,096 characters of the oversized chunk instead
+  # of dropping it, so the match across the boundary is caught.
+  assert shown == ['x' * 4_096 + 'hun', '', '']
+  screened = [text for _, text in _screened(client)]
+  assert screened[1] == 'x' * 4_093 + 'hun' + 'ter2'
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_context_is_a_character_suffix():
+  client = _matching_client('hunter2')
+  plugin = ModelArmorPlugin(config=_config(), client=client)
+
+  await _stream(plugin, ['a' * 3_000, 'b' * 3_000, 'c' * 10])
+
+  screened = [text for _, text in _screened(client)]
+  assert screened[2] == 'a' * 1_096 + 'b' * 3_000 + 'c' * 10
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_deidentified_after_long_clean_chunk():
+  client = _deidentifying_client('123-45-6789', '[SSN]')
+  plugin = ModelArmorPlugin(
+      config=_config(deidentify_sensitive_data=True), client=client
+  )
+
+  shown = await _stream(plugin, ['y' * 5_000, 'My SSN is 123-45-6789.'])
+
+  assert shown == ['y' * 5_000, 'My SSN is [SSN].']
+
+
+@pytest.mark.asyncio
+async def test_streamed_output_deidentified_chunk_cut_by_window():
+  client = _deidentifying_client('123-45-6789', '[SSN]')
+  plugin = ModelArmorPlugin(
+      config=_config(deidentify_sensitive_data=True), client=client
+  )
+
+  # A de-identified chunk that fits in the window stays whole as context, so
+  # a later finding is still delivered de-identified.
+  short = await _stream(
+      plugin,
+      ['SSN 123-45-6789 ' + 'z' * 3_000, 'w' * 2_000, 'SSN 123-45-6789.'],
+      context=_stream_context('inv-short'),
+  )
+  assert short == [
+      'SSN [SSN] ' + 'z' * 3_000,
+      'w' * 2_000,
+      'SSN [SSN].',
+  ]
+
+  # A de-identified chunk longer than the window is cut; the cut point in the
+  # delivered text is unknown, so a later finding withholds the stream.
+  long = await _stream(
+      plugin,
+      ['SSN 123-45-6789 ' + 'z' * 5_000, 'w' * 100, 'SSN 123-45-6789.'],
+      context=_stream_context('inv-long'),
+  )
+  assert long == ['SSN [SSN] ' + 'z' * 5_000, 'w' * 100, '']
