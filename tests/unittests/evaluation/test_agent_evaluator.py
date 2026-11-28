@@ -2049,6 +2049,7 @@ def test_process_metrics_and_get_failures_printing(
   mock_metric_result.eval_metric_result.criterion = None
   mock_metric_result.eval_metric_result.threshold = threshold
   mock_metric_result.eval_metric_result.score = score
+  mock_metric_result.run_unscored = False
 
   eval_metric_results = {"dummy_metric": [mock_metric_result]}
 
@@ -2154,6 +2155,93 @@ def test_migrate_eval_data_round_trips_non_ascii_with_non_utf8_default(
 
   migrated = json.loads(new_eval_data_file.read_text(encoding="utf-8"))
   assert _NON_ASCII_TEXT in json.dumps(migrated, ensure_ascii=False)
+
+
+def _hallucinations_run(
+    index: int,
+    turn_scores: list[float | None],
+    overall_score: float | None,
+    overall_status: EvalStatus,
+) -> EvalCaseResult:
+  """One run of a case scored by hallucinations_v1 (threshold 0.8)."""
+
+  def _result(score: float | None, status: EvalStatus) -> EvalMetricResult:
+    return EvalMetricResult(
+        metric_name="hallucinations_v1",
+        threshold=0.8,
+        score=score,
+        eval_status=status,
+    )
+
+  per_invocation = []
+  for turn, score in enumerate(turn_scores):
+    if score is None:
+      status = EvalStatus.NOT_EVALUATED
+    else:
+      status = EvalStatus.PASSED if score >= 0.8 else EvalStatus.FAILED
+    per_invocation.append(
+        EvalMetricResultPerInvocation(
+            actual_invocation=Invocation(
+                user_content=_content(f"q{turn}"),
+                final_response=_content(f"a{turn}"),
+            ),
+            eval_metric_results=[_result(score, status)],
+        )
+    )
+  return EvalCaseResult(
+      eval_set_id="s",
+      eval_id="c",
+      final_eval_status=(
+          EvalStatus.PASSED
+          if overall_status == EvalStatus.PASSED
+          else EvalStatus.NOT_EVALUATED
+      ),
+      overall_eval_metric_results=[_result(overall_score, overall_status)],
+      eval_metric_result_per_invocation=per_invocation,
+      session_id=f"s{index}",
+  )
+
+
+def _failures(runs: list[EvalCaseResult]) -> list[str]:
+  return AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results=(
+          AgentEvaluator._get_eval_metric_results_with_invocation(runs)
+      ),
+      print_detailed_results=False,
+      agent_module="my_agent",
+  )
+
+
+def test_run_left_unscored_is_not_passed_on_its_scored_turns():
+  """A run the evaluator left unscored does not pass on the turns it scored.
+
+  hallucinations_v1 scores the first turn 1.0 but cannot label the second, so
+  it leaves the run NOT_EVALUATED with no score. Averaging only the scored
+  turn would pass the metric; it must be reported as not evaluated instead.
+  """
+  runs = [
+      _hallucinations_run(i, [1.0, None], None, EvalStatus.NOT_EVALUATED)
+      for i in range(2)
+  ]
+
+  failures = _failures(runs)
+
+  assert len(failures) == 1
+  assert "hallucinations_v1 for my_agent was not evaluated" in failures[0]
+
+
+def test_run_left_unscored_is_left_out_of_a_scored_runs_mean():
+  """The scored turns of an unscored run do not change the other runs' mean.
+
+  The scored run passes at 1.0. Counting the unscored run's 0.0 turn would
+  bring the mean to 0.67 and fail the metric against its 0.8 threshold.
+  """
+  runs = [
+      _hallucinations_run(0, [0.0, None], None, EvalStatus.NOT_EVALUATED),
+      _hallucinations_run(1, [1.0, 1.0], 1.0, EvalStatus.PASSED),
+  ]
+
+  assert _failures(runs) == []
 
 
 if __name__ == "__main__":

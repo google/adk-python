@@ -110,6 +110,14 @@ class _EvalMetricResultWithInvocation(BaseModel):
   actual_invocation: Invocation
   expected_invocation: Invocation | None = None
   eval_metric_result: EvalMetricResult
+  run_unscored: bool = False
+  """Whether the metric left the run this invocation belongs to unscored.
+
+  An evaluator can score some invocations of a run and still leave the run as
+  a whole unscored (NOT_EVALUATED with no score), as hallucinations_v1 does
+  when the judge cannot label a response. Such an invocation's score is shown,
+  but not counted towards the metric's overall score.
+  """
 
 
 class AgentEvaluator:
@@ -896,6 +904,13 @@ class AgentEvaluator:
     # Go over the EvalCaseResult one by one, do note that at this stage all
     # EvalCaseResult belong to the same eval id.
     for eval_case_result in eval_results_per_eval_id:
+      # Metrics the evaluator left unscored for this run as a whole.
+      unscored_metrics = {
+          overall.metric_name
+          for overall in eval_case_result.overall_eval_metric_results
+          if overall.eval_status == EvalStatus.NOT_EVALUATED
+          and overall.score is None
+      }
       # For the given eval_case_result, we go over metric results for each
       # invocation. Do note that a single eval case can have more than one
       # invocation and for each invocation there could be more than on eval
@@ -919,6 +934,7 @@ class AgentEvaluator:
                   actual_invocation=actual_invocation,
                   expected_invocation=expected_invocation,
                   eval_metric_result=eval_metric_result,
+                  run_unscored=metric_name in unscored_metrics,
               )
           )
     return eval_metric_results
@@ -944,10 +960,12 @@ class AgentEvaluator:
         continue
 
       metric_result = eval_metric_results_with_invocations[0].eval_metric_result
+      # A run the evaluator left unscored counts as not evaluated, so the
+      # invocations it did score are left out rather than allowed to pass it.
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
-          if m.eval_metric_result.score is not None
+          if m.eval_metric_result.score is not None and not m.run_unscored
       ]
       overall_score = statistics.mean(scores) if scores else None
 
