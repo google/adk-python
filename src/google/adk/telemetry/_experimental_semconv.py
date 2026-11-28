@@ -68,6 +68,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 
 from ._finish_reason import is_reported_finish_reason
+from ._finish_reason import reports_tool_call
 from .context import TelemetryConfig
 
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
@@ -260,8 +261,13 @@ def _to_role(role: str | None) -> str:
   return ''
 
 
-def _to_finish_reason(finish_reason: types.FinishReason | None) -> str:
+def _to_finish_reason(
+    finish_reason: types.FinishReason | None,
+    content: types.Content | None = None,
+) -> str:
   if is_reported_finish_reason(finish_reason):
+    if reports_tool_call(finish_reason, content):
+      return 'tool_call'
     if finish_reason is types.FinishReason.OTHER:
       # Mapped to error, as the JSON schema for finish_reason does not
       # support it.
@@ -355,7 +361,9 @@ def _to_output_message(
   return OutputMessage(
       role=message['role'],
       parts=message['parts'],
-      finish_reason=_to_finish_reason(llm_response.finish_reason),
+      finish_reason=_to_finish_reason(
+          llm_response.finish_reason, llm_response.content
+      ),
   )
 
 
@@ -620,7 +628,9 @@ def _build_response_common_attributes(
   attributes: dict[str, AttributeValue] = {}
   # An unreported finish reason maps to '': omit the attribute rather than
   # publish that.
-  if finish_reason := _to_finish_reason(llm_response.finish_reason):
+  if finish_reason := _to_finish_reason(
+      llm_response.finish_reason, llm_response.content
+  ):
     attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [finish_reason]
   if llm_response.usage_metadata:
     attributes.update(
