@@ -4938,6 +4938,60 @@ def test_parse_tool_calls_from_text_multiple_calls():
   assert remainder == "ignored suffix"
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    ["", "<|python_tag|>"],
+    ids=["bare", "python_tag"],
+)
+@pytest.mark.parametrize(
+    "parameters",
+    [{"city": "Paris"}, '{"city": "Paris"}'],
+    ids=["dict", "json_string"],
+)
+def test_parse_tool_calls_from_text_accepts_llama_parameters_key(
+    prefix, parameters
+):
+  """Llama 3.x names the argument object "parameters", not "arguments"."""
+  text = prefix + json.dumps({"name": "get_weather", "parameters": parameters})
+
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+
+  assert [call.function.name for call in tool_calls] == ["get_weather"]
+  assert json.loads(tool_calls[0].function.arguments) == {"city": "Paris"}
+  assert remainder == (prefix or None)
+
+
+def test_parse_tool_calls_from_text_prefers_arguments_over_parameters():
+  text = (
+      '{"name": "get_weather", "arguments": {"city": "Paris"},'
+      ' "parameters": {"city": "Rome"}}'
+  )
+
+  tool_calls, _ = _parse_tool_calls_from_text(text)
+
+  assert len(tool_calls) == 1
+  assert json.loads(tool_calls[0].function.arguments) == {"city": "Paris"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"name": "get_weather"}',
+        '{"title": "Report", "parameters": {"city": "Paris"}}',
+        '{"name": 7, "parameters": {"city": "Paris"}}',
+        (
+            '{"name": "get_weather", "description": "Get the weather",'
+            ' "parameters": {"type": "object", "properties": {}}}'
+        ),
+    ],
+)
+def test_parse_tool_calls_from_text_leaves_non_tool_json_as_text(text):
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+
+  assert tool_calls == []
+  assert remainder == text
+
+
 def test_parse_tool_calls_from_text_stops_at_text_between_calls():
   """A tool call that follows prose is quoted text, not another call."""
   beta = '{"name":"beta","arguments":{"timezone":"Asia/Taipei"}}'

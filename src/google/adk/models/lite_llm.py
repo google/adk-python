@@ -2370,6 +2370,10 @@ def _build_tool_call_from_json_dict(
 
   name = candidate.get("name")
   args = candidate.get("arguments")
+  # Llama 3.x writes "parameters" where other models write "arguments". A tool
+  # definition also has "parameters", and is told apart by its "description".
+  if "arguments" not in candidate and "description" not in candidate:
+    args = candidate.get("parameters")
   if not isinstance(name, str) or args is None:
     return None
 
