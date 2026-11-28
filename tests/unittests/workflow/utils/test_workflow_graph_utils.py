@@ -229,6 +229,18 @@ class TestBuildNode:
     agent = DummyRemoteAgent(mode=None)
     built = build_node(agent)
     assert built == agent
+    assert built.rerun_on_resume is True
+
+  def test_build_node_remote_a2a_agent_transfer_rerun_on_resume(self):
+    """build_node sets rerun_on_resume=True for transfer-mode RemoteA2aAgent."""
+    agent = RemoteA2aAgent(name="remote", agent_card="dummy_card", mode=None)
+    assert agent.rerun_on_resume is True
+    built = build_node(agent)
+    assert built.rerun_on_resume is True
+
+    # Explicit override to False is respected
+    built_no_rerun = build_node(agent, rerun_on_resume=False)
+    assert built_no_rerun.rerun_on_resume is False
 
   def test_build_node_remote_a2a_agent_task(self):
     """build_node raises ValueError if RemoteA2aAgent mode is task."""

@@ -184,6 +184,14 @@ def build_node(
         )
       return cast(BaseNode, agent)
     else:
+      if (
+          _remote_a2a_agent_type is not None
+          and isinstance(node_like, _remote_a2a_agent_type)
+          and rerun_on_resume is None
+          and 'rerun_on_resume' not in kwargs
+          and not node_like.rerun_on_resume
+      ):
+        kwargs['rerun_on_resume'] = True
       if kwargs:
         return node_like.model_copy(update=kwargs)
       return node_like
