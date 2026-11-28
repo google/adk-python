@@ -16,6 +16,9 @@
 
 import asyncio
 from pathlib import Path
+from pathlib import PurePath
+from pathlib import PurePosixPath
+from pathlib import PureWindowsPath
 import pickle
 from typing import Any
 from typing import Optional
@@ -231,6 +234,33 @@ async def test_instruction_includes_working_dir_before_initialization():
   assert "Your environment is at /workspace/" in instruction
   assert "# Environment Rules" in instruction
   assert not env.contexts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "working_dir",
+    [PurePosixPath("/home/user"), PureWindowsPath("/home/user")],
+    ids=["posix", "windows"],
+)
+async def test_instruction_renders_working_dir_with_forward_slashes(
+    working_dir: PurePath,
+):
+  """The directory is the environment's own, not a re-spelling of it.
+
+  A remote environment is a Linux sandbox that reports a POSIX directory such
+  as `/home/user`, built from a POSIX string. On a Windows host the `Path` is
+  a `WindowsPath`, whose `str()` would tell the model the directory is
+  `\\home\\user`, which is not a directory the sandbox has.
+  """
+  env = _FakeEnvironment(stdout="", file_content=b"", working_dir=working_dir)
+  toolset = EnvironmentToolset(environment=env)
+
+  instruction = await _instruction(toolset)
+
+  # The directory is the first line of the injected instruction, and the
+  # template appends a forward slash, so an unrendered `str()` shows a
+  # backslash there on a Windows host.
+  assert instruction.splitlines()[0] == "Your environment is at /home/user/"
 
 
 class _RaisingBeforeInitEnvironment(_FakeEnvironment):
