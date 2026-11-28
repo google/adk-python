@@ -16,6 +16,7 @@ import base64
 import datetime
 import json
 import logging
+from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
 from google.adk.auth._kms_encryptor import _DEK_FERNET_CACHE
@@ -446,7 +447,7 @@ async def test_google_credentials_manager_oauth_completion_encryption():
       access_token="oauth_access_token",
       refresh_token="oauth_refresh_token",
   )
-  tool_context.get_auth_response = Mock(return_value=auth_response)
+  tool_context.get_auth_response_async = AsyncMock(return_value=auth_response)
 
   creds = await manager.get_valid_credentials(tool_context)
   assert isinstance(creds, KmsEncryptedCredentials)
@@ -486,7 +487,7 @@ async def test_google_credentials_manager_oauth_completion_without_scopes():
       access_token="oauth_access_token",
       refresh_token="oauth_refresh_token",
   )
-  tool_context.get_auth_response = Mock(return_value=auth_response)
+  tool_context.get_auth_response_async = AsyncMock(return_value=auth_response)
 
   creds = await manager.get_valid_credentials(tool_context)
   assert isinstance(creds, KmsEncryptedCredentials)
@@ -515,7 +516,7 @@ async def test_google_credentials_manager_decryption_failure_fallback():
   }
   tool_context = Mock(spec=ToolContext)
   tool_context.state = {"user_token": json.dumps(corrupted_creds)}
-  tool_context.get_auth_response = Mock(return_value=None)
+  tool_context.get_auth_response_async = AsyncMock(return_value=None)
   tool_context.request_credential = Mock()
 
   # Should not raise exception; instead requests new credential via OAuth
@@ -663,7 +664,7 @@ async def test_google_credentials_manager_unconfigured_kms_rejects_encrypted_sta
           "client_secret": "my_client_secret",
       })
   }
-  tool_context.get_auth_response = Mock(return_value=None)
+  tool_context.get_auth_response_async = AsyncMock(return_value=None)
   tool_context.request_credential = Mock()
 
   result = await manager.get_valid_credentials(tool_context)
@@ -694,7 +695,7 @@ async def test_google_credentials_manager_decryption_failure_logs_warning(
   }
   tool_context = Mock(spec=ToolContext)
   tool_context.state = {"user_token": json.dumps(corrupted_creds)}
-  tool_context.get_auth_response = Mock(return_value=None)
+  tool_context.get_auth_response_async = AsyncMock(return_value=None)
   tool_context.request_credential = Mock()
 
   with caplog.at_level(logging.WARNING):
@@ -722,7 +723,7 @@ async def test_google_credentials_manager_invalid_json_payload_fallback():
 
   tool_context = Mock(spec=ToolContext)
   tool_context.state = {"user_token": "{not-valid-json: xyz"}
-  tool_context.get_auth_response = Mock(return_value=None)
+  tool_context.get_auth_response_async = AsyncMock(return_value=None)
   tool_context.request_credential = Mock()
 
   result = await manager.get_valid_credentials(tool_context)
@@ -748,7 +749,7 @@ async def test_google_credentials_manager_invalid_json_payload_logs_warning(
 
   tool_context = Mock(spec=ToolContext)
   tool_context.state = {"user_token": "corrupt_non_json_string"}
-  tool_context.get_auth_response = Mock(return_value=None)
+  tool_context.get_auth_response_async = AsyncMock(return_value=None)
   tool_context.request_credential = Mock()
 
   with caplog.at_level(logging.WARNING):
