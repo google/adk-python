@@ -96,7 +96,6 @@ from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES
 from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
 from ._adk_attributes import ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH
 from ._adk_attributes import ADK_TOOL_CONFIRMATION_CONFIRMED
-from ._adk_attributes import ADK_TOOL_CONFIRMATION_CONFIRMED_BY
 from ._adk_attributes import TOOL_CONFIRMATION_DECISION_EVENT
 from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
@@ -614,8 +613,7 @@ def trace_tool_confirmation_decision(
     args: dict[str, object],
     tool_confirmation: ToolConfirmation,
     function_call_id: str | None,
-    confirmed_by: str | None,
-) -> None:
+    ) -> None:
   """Records a tool confirmation decision as an event on the current span.
 
   The request-confirmation flow consumes the user's `ToolConfirmation`
@@ -627,15 +625,16 @@ def trace_tool_confirmation_decision(
 
   The raw arguments are not recorded, only a SHA-256 hash of their
   canonical serialization, so the event carries no tool input content.
+  The confirming party's identity is likewise not recorded: ADK carries
+  user identity only in log records, never on spans, and this event
+  follows that practice.
 
   Args:
     tool: The tool the confirmation decided on.
     args: The arguments of the function call the confirmation decided on.
     tool_confirmation: The confirmation the user supplied.
     function_call_id: The id of the function call being decided on.
-    confirmed_by: The identity of the confirming party as supplied with the
-      confirmation (the session's user id), or None if not available.
-  """
+    """
   span = trace.get_current_span()
   if not span.is_recording():
     return
@@ -649,9 +648,7 @@ def trace_tool_confirmation_decision(
   }
   if function_call_id:
     attributes[GEN_AI_TOOL_CALL_ID] = function_call_id
-  if confirmed_by:
-    attributes[ADK_TOOL_CONFIRMATION_CONFIRMED_BY] = confirmed_by
-
+  
   span.add_event(TOOL_CONFIRMATION_DECISION_EVENT, attributes=attributes)
 
 
