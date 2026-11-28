@@ -260,25 +260,47 @@ def _extract_reasoning_token_count(usage: CompletionUsage) -> int | None:
   return reasoning if isinstance(reasoning, int) else None
 
 
+def _split_completion_tokens(
+    usage: CompletionUsage,
+) -> tuple[int | None, int | None]:
+  """Returns disjoint ``(candidates, thoughts)`` counts for completion usage.
+
+  OpenAI counts reasoning inside ``completion_tokens``, so the reasoning is
+  subtracted from it. Some compatible endpoints, such as Gemini on Vertex AI
+  and xAI, count reasoning outside ``completion_tokens`` instead. Their
+  ``total_tokens`` then equals prompt plus completion plus reasoning, which
+  OpenAI's total never does when reasoning is reported, and their counts are
+  kept as they are.
+  """
+  prompt = usage.prompt_tokens
+  completion = usage.completion_tokens
+  reasoning = _extract_reasoning_token_count(usage)
+  if (
+      isinstance(reasoning, int)
+      and reasoning > 0
+      and isinstance(prompt, int)
+      and isinstance(completion, int)
+      and prompt >= 0
+      and completion >= 0
+      and usage.total_tokens == prompt + completion + reasoning
+  ):
+    return completion, reasoning
+  return _openai_common.split_reasoning_tokens(completion, reasoning)
+
+
 def _usage_metadata(
     usage: CompletionUsage | None,
 ) -> types.GenerateContentResponseUsageMetadata | None:
   """Builds ADK usage metadata, tolerating endpoints that omit usage."""
   if usage is None:
     return None
+  candidates, thoughts = _split_completion_tokens(usage)
   return types.GenerateContentResponseUsageMetadata(
       prompt_token_count=usage.prompt_tokens,
-      candidates_token_count=usage.completion_tokens,
+      candidates_token_count=candidates,
       total_token_count=usage.total_tokens,
       cached_content_token_count=_extract_cached_token_count(usage),
-      # Reasoning tokens are also counted in completion_tokens, matching the
-      # Responses surface's candidates/thoughts mapping. Unlike Gemini, where
-      # the two buckets are disjoint, thoughts here is a subset of candidates,
-      # so telemetry/_token_usage.py (which sums candidates + thoughts into
-      # output tokens) over-counts reasoning tokens for OpenAI models. That
-      # aggregator needs to learn about overlapping buckets; until then this
-      # keeps both OpenAI surfaces consistent.
-      thoughts_token_count=_extract_reasoning_token_count(usage),
+      thoughts_token_count=thoughts,
   )
 
 

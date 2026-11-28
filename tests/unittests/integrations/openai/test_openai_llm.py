@@ -28,10 +28,13 @@ from google.adk.integrations.openai._openai_llm import _usage_metadata
 from google.adk.integrations.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 from openai import AsyncOpenAI
+from openai.types.completion_usage import CompletionTokensDetails
+from openai.types.completion_usage import CompletionUsage
 import pytest
 
 
@@ -1681,23 +1684,77 @@ async def test_model_function_call_becomes_assistant_tool_calls():
   }
 
 
-@pytest.mark.parametrize(
-    "details, expected",
-    [
-        (mock.MagicMock(reasoning_tokens=42), 42),
-        (mock.MagicMock(reasoning_tokens=0), 0),
-        (None, None),
-    ],
-)
-def test_usage_metadata_maps_reasoning_tokens(details, expected):
-  """completion_tokens_details.reasoning_tokens maps to thoughts_token_count."""
-  usage = mock.MagicMock(
-      prompt_tokens=100,
-      completion_tokens=50,
-      total_tokens=150,
+def _completion_usage(
+    prompt: int,
+    completion: int,
+    total: int,
+    reasoning: int | None = None,
+) -> CompletionUsage:
+  details = (
+      None
+      if reasoning is None
+      else CompletionTokensDetails(reasoning_tokens=reasoning)
+  )
+  return CompletionUsage.model_construct(
+      prompt_tokens=prompt,
+      completion_tokens=completion,
+      total_tokens=total,
       prompt_tokens_details=None,
       completion_tokens_details=details,
   )
-  metadata = _usage_metadata(usage)
-  assert metadata.thoughts_token_count == expected
-  assert metadata.candidates_token_count == 50
+
+
+@pytest.mark.parametrize(
+    "prompt, completion, total, reasoning, candidates, thoughts",
+    [
+        # OpenAI counts reasoning inside completion_tokens.
+        pytest.param(100, 50, 150, 42, 8, 42, id="reasoning_in_completion"),
+        pytest.param(100, 50, 150, 0, 50, 0, id="zero_reasoning"),
+        pytest.param(100, 50, 150, None, 50, None, id="no_reasoning_details"),
+        pytest.param(100, 50, 150, 50, 0, 50, id="all_reasoning"),
+        pytest.param(100, 50, 150, 60, 0, 50, id="reasoning_above_completion"),
+        pytest.param(100, 50, 149, -1, 50, 0, id="negative_reasoning"),
+        pytest.param(100, -1, 99, 5, 0, 0, id="negative_completion"),
+        # Gemini on Vertex AI and xAI count reasoning outside
+        # completion_tokens, and their total includes it.
+        pytest.param(
+            39, 4, 146, 103, 4, 103, id="reasoning_outside_completion"
+        ),
+        pytest.param(100, 50, 170, 20, 50, 20, id="outside_below_completion"),
+        pytest.param(39, 4, 0, 103, 0, 4, id="outside_with_zero_total"),
+        pytest.param(-1, 4, 106, 103, 0, 4, id="outside_negative_prompt"),
+        pytest.param(100, -1, 104, 5, 0, 0, id="outside_negative_completion"),
+    ],
+)
+def test_usage_metadata_splits_reasoning_from_candidates(
+    prompt: int,
+    completion: int,
+    total: int,
+    reasoning: int | None,
+    candidates: int,
+    thoughts: int | None,
+) -> None:
+  """Candidate and thought counts are disjoint, as for Gemini."""
+  metadata = _usage_metadata(
+      _completion_usage(prompt, completion, total, reasoning)
+  )
+  assert metadata is not None
+  assert metadata.candidates_token_count == candidates
+  assert metadata.thoughts_token_count == thoughts
+  assert metadata.prompt_token_count == prompt
+  assert metadata.total_token_count == total
+
+
+@pytest.mark.parametrize(
+    "usage, output_tokens",
+    [
+        pytest.param(_completion_usage(20, 50, 70, 38), 50, id="openai"),
+        pytest.param(_completion_usage(39, 4, 146, 103), 107, id="vertex"),
+    ],
+)
+def test_usage_metadata_reports_output_tokens_once(
+    usage: CompletionUsage, output_tokens: int
+) -> None:
+  """Telemetry's output tokens count each reasoning token once."""
+  token_usage = TokenUsage.from_usage_metadata(_usage_metadata(usage))
+  assert token_usage.output_tokens == output_tokens
