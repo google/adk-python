@@ -164,12 +164,19 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       )
       return ExchangeResult(auth_credential, False)
 
+    scopes: list[str] = []
+    if isinstance(auth_scheme, OAuth2) and auth_scheme.flows.clientCredentials:
+      scopes = list(auth_scheme.flows.clientCredentials.scopes or {})
+    elif isinstance(auth_scheme, OpenIdConnectWithConfig):
+      scopes = auth_scheme.scopes or []
+
     try:
       # authlib's client is synchronous; run it off the event loop.
       tokens = await asyncio.to_thread(
           client.fetch_token,
           token_endpoint,
           grant_type=OAuthGrantType.CLIENT_CREDENTIALS,
+          scope=" ".join(scopes) or None,
       )
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged client credentials for access token")

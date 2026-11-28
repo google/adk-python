@@ -25,12 +25,15 @@ from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import OAuthGrantType
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.exchanger import oauth2_credential_exchanger
 from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangeError
 from google.adk.auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 import pytest
+from pytest_mock import MockerFixture
+from requests import Response
 
 
 class _TokenBodyCapturingOAuth2Session(OAuth2Session):
@@ -383,6 +386,7 @@ class TestOAuth2CredentialExchanger:
     mock_client.fetch_token.assert_called_once_with(
         "https://example.com/token",
         grant_type="client_credentials",
+        scope="read write",
     )
 
   @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
@@ -542,3 +546,45 @@ class TestOAuth2CredentialExchanger:
     from google.adk.auth.auth_schemes import OAuthGrantType
 
     assert grant_type == OAuthGrantType.AUTHORIZATION_CODE
+
+
+@pytest.mark.parametrize("scheme_kind", ["oauth2", "oidc"])
+@pytest.mark.parametrize(
+    "scopes", [[], ["read:items"], ["read:items", "write:items"]]
+)
+async def test_client_credentials_request_scopes(
+    scheme_kind: str, scopes: list[str], mocker: MockerFixture
+) -> None:
+  """Configured scopes reach the actual Authlib client-credentials POST."""
+  scheme: AuthScheme
+  if scheme_kind == "oauth2":
+    scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={scope: scope for scope in scopes},
+            )
+        )
+    )
+  else:
+    scheme = OpenIdConnectWithConfig(
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        grant_types_supported=["client_credentials"],
+        scopes=scopes,
+    )
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(client_id="client", client_secret="secret"),
+  )
+  response = Response()
+  response.status_code = 200
+  response._content = b'{"access_token":"fresh","token_type":"Bearer"}'
+  send = mocker.patch("requests.sessions.Session.send", return_value=response)
+
+  result = await OAuth2CredentialExchanger().exchange(credential, scheme)
+
+  assert result.was_exchanged
+  body = parse_qs(send.call_args.args[0].body, keep_blank_values=True)
+  assert body["grant_type"] == ["client_credentials"]
+  assert body.get("scope") == ([" ".join(scopes)] if scopes else None)
