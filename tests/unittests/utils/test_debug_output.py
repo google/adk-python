@@ -19,6 +19,7 @@ from __future__ import annotations
 from google.adk.events.event import Event
 from google.adk.utils._debug_output import print_event
 from google.genai import types
+import pytest
 
 
 def _event(*parts: types.Part) -> Event:
@@ -149,26 +150,24 @@ def test_print_event_verbose_truncates_long_tool_response(capsys):
   assert _lines(capsys) == ["agent > [Tool result: {'r': '" + 'b' * 93 + '...]']
 
 
-def test_print_event_verbose_reports_executable_code_language(capsys):
-  print_event(
-      _event(types.Part.from_executable_code(code='x = 1', language='PYTHON')),
-      verbose=True,
-  )
-  # The language is an enum, and formatting a str-mixin enum renders the bare
-  # value on 3.10 but ``Language.PYTHON`` on 3.11+, so only assert it is named.
-  (line,) = _lines(capsys)
-  assert line.startswith('agent > [Executing ')
-  assert 'PYTHON' in line
-  assert line.endswith(' code...]')
-
-
-def test_print_event_verbose_executable_code_without_language(capsys):
-  print_event(
-      _event(types.Part(executable_code=types.ExecutableCode(code='x = 1'))),
-      verbose=True,
-  )
-  # An unlabelled code block still gets a line, with a generic word for it.
-  assert _lines(capsys) == ['agent > [Executing code code...]']
+@pytest.mark.parametrize(
+    ('language', 'expected'),
+    [
+        pytest.param(types.Language.PYTHON, 'PYTHON code', id='enum'),
+        pytest.param(None, 'code (language unknown)', id='missing'),
+        pytest.param(
+            types.Language.LANGUAGE_UNSPECIFIED,
+            'code (language unknown)',
+            id='unspecified',
+        ),
+    ],
+)
+def test_print_event_verbose_reports_executable_code_language(
+    capsys, language, expected
+):
+  code = types.ExecutableCode(code='x = 1', language=language)
+  print_event(_event(types.Part(executable_code=code)), verbose=True)
+  assert _lines(capsys) == [f'agent > [Executing {expected}...]']
 
 
 def test_print_event_verbose_reports_code_output(capsys):
