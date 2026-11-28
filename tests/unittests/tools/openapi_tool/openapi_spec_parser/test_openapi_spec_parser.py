@@ -180,6 +180,44 @@ def test_parse_spec_with_reference(openapi_spec_generator):
   assert op.return_value.type_value.__origin__ is dict
 
 
+def test_parse_spec_with_escaped_and_indexed_json_pointer_reference(
+    openapi_spec_generator,
+):
+  """A $ref into `paths` escapes "/" as "~1" and indexes arrays (RFC 6901)."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "API with pointer refs", "version": "1.0.0"},
+      "paths": {
+          "/pets/{petId}": {
+              "get": {
+                  "operationId": "getPet",
+                  "parameters": [{
+                      "name": "petId",
+                      "in": "path",
+                      "required": True,
+                      "schema": {"type": "string"},
+                  }],
+                  "responses": {"200": {"description": "OK"}},
+              },
+              "delete": {
+                  "operationId": "deletePet",
+                  "parameters": [
+                      {"$ref": "#/paths/~1pets~1%7BpetId%7D/get/parameters/0"}
+                  ],
+                  "responses": {"204": {"description": "Deleted"}},
+              },
+          }
+      },
+  }
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+  delete_op = next(op for op in parsed_operations if op.name == "delete_pet")
+
+  assert [
+      (p.original_name, p.param_location) for p in delete_op.parameters
+  ] == [("petId", "path")]
+
+
 def test_parse_spec_with_circular_reference(openapi_spec_generator):
   """Test correct handling of circular $ref (important!)."""
   openapi_spec = {

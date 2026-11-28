@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ..._gemini_schema_util import _resolve_json_pointer
 from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
 from .operation_parser import _required_scheme_name
@@ -277,17 +278,11 @@ class OpenApiSpecParser:
 
     def resolve_ref(ref_string, current_doc):
       """Resolves a single $ref string."""
-      parts = ref_string.split("/")
-      if parts[0] != "#":
+      if ref_string.split("/")[0] != "#":
         raise ValueError(f"External references not supported: {ref_string}")
-
-      current = current_doc
-      for part in parts[1:]:
-        if part in current:
-          current = current[part]
-        else:
-          return None  # Reference not found
-      return current
+      # A JSON Pointer escapes "/" and "~" in keys as "~1" and "~0" (RFC 6901),
+      # as in a ref into `paths`, and indexes arrays by position.
+      return _resolve_json_pointer(ref_string, current_doc)
 
     def recursive_resolve(obj, current_doc, seen_refs=None):
       """Recursively resolves references, handling circularity.
