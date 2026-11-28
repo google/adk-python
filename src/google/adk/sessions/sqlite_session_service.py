@@ -317,7 +317,7 @@ class SqliteSessionService(BaseSessionService):
       session_id: str,
       config: GetSessionConfig | None = None,
   ) -> Session | None:
-    async with self._get_db_connection() as db:
+    async with self._read_transaction() as db:
       session_id = await self._resolve_session_id(
           db, app_name, user_id, session_id
       )
@@ -362,30 +362,30 @@ class SqliteSessionService(BaseSessionService):
       app_state = await self._get_app_state(db, app_name)
       user_state = await self._get_user_state(db, app_name, user_id)
 
-      # Merge states
-      merged_state = _merge_state(app_state, user_state, session_state)
+    # Merge states
+    merged_state = _merge_state(app_state, user_state, session_state)
 
-      # Deserialize events and reverse to chronological order
-      events = [
-          Event.model_validate_json(event_data)
-          for event_data in reversed(storage_events_data)
-      ]
+    # Deserialize events and reverse to chronological order
+    events = [
+        Event.model_validate_json(event_data)
+        for event_data in reversed(storage_events_data)
+    ]
 
-      return Session(
-          app_name=app_name,
-          user_id=user_id,
-          id=session_id,
-          state=merged_state,
-          events=events,
-          last_update_time=last_update_time,
-      )
+    return Session(
+        app_name=app_name,
+        user_id=user_id,
+        id=session_id,
+        state=merged_state,
+        events=events,
+        last_update_time=last_update_time,
+    )
 
   @override
   async def list_sessions(
       self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     sessions_list = []
-    async with self._get_db_connection() as db:
+    async with self._read_transaction() as db:
       # Fetch sessions
       if user_id is not None:
         session_rows = await db.execute_fetchall(
@@ -419,22 +419,22 @@ class SqliteSessionService(BaseSessionService):
                 row["state"], context="user state"
             )
 
-      # Build session list
-      for row in session_rows:
-        session_user_id = row["user_id"]
-        session_state = _decode_state(row["state"], context="session state")
-        user_state = user_states_map.get(session_user_id, {})
-        merged_state = _merge_state(app_state, user_state, session_state)
-        sessions_list.append(
-            Session(
-                app_name=app_name,
-                user_id=session_user_id,
-                id=row["id"],
-                state=merged_state,
-                events=[],
-                last_update_time=row["update_time"],
-            )
-        )
+    # Build session list
+    for row in session_rows:
+      session_user_id = row["user_id"]
+      session_state = _decode_state(row["state"], context="session state")
+      user_state = user_states_map.get(session_user_id, {})
+      merged_state = _merge_state(app_state, user_state, session_state)
+      sessions_list.append(
+          Session(
+              app_name=app_name,
+              user_id=session_user_id,
+              id=row["id"],
+              state=merged_state,
+              events=[],
+              last_update_time=row["update_time"],
+          )
+      )
     return ListSessionsResponse(sessions=sessions_list)
 
   @override
@@ -568,6 +568,22 @@ class SqliteSessionService(BaseSessionService):
         await self._memory_conn.close()
         self._memory_conn = None
         self._schema_ready = False
+
+  @asynccontextmanager
+  async def _read_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+    """Reads session rows, events, and scoped state from one SQLite snapshot.
+
+    The service leaves SQLite in its default rollback journal mode. In that
+    mode an append on another connection waits, up to the busy timeout, for
+    this transaction to end before it commits. With WAL enabled, the append
+    commits right away and this snapshot does not see it.
+    """
+    async with self._get_db_connection() as db:
+      await db.execute("BEGIN")
+      try:
+        yield db
+      finally:
+        await db.rollback()
 
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
