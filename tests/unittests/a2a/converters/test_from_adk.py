@@ -328,3 +328,53 @@ class TestSerializeValue:
     result = self.serialize(value)
     assert result == {str(dt): "when", "1": "one", "label": "x"}
     assert all(isinstance(k, str) for k in result)
+
+
+class TestEventActionsMetadata:
+  """Event actions are stored as JSON values in the A2A metadata Struct."""
+
+  def _actions_metadata(self, event: Event) -> dict:
+    [a2a_event] = convert_event_to_a2a_events(event, {}, "task-1", "ctx-1")
+    metadata = _compat.meta_to_dict(a2a_event.artifact.metadata)
+    return metadata[_get_adk_metadata_key("actions")]
+
+  def test_datetime_in_state_delta_is_serialized(self) -> None:
+    from datetime import datetime
+
+    event = Event(
+        author="agent",
+        invocation_id="inv-1",
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="done")]
+        ),
+        actions=event_actions.EventActions(
+            state_delta={"booked_at": datetime(2026, 1, 1, 9, 30)}
+        ),
+    )
+
+    assert self._actions_metadata(event)["stateDelta"] == {
+        "booked_at": "2026-01-01T09:30:00"
+    }
+
+  def test_api_key_auth_request_is_serialized(self) -> None:
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_tool import AuthConfig
+
+    auth_config = AuthConfig(
+        auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"})
+    )
+    event = Event(
+        author="agent",
+        invocation_id="inv-1",
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="need a key")]
+        ),
+        actions=event_actions.EventActions(
+            requested_auth_configs={"fc-1": auth_config}
+        ),
+    )
+
+    actions = self._actions_metadata(event)
+    auth_scheme = actions["requestedAuthConfigs"]["fc-1"]["authScheme"]
+    assert auth_scheme["in"] == "header"
