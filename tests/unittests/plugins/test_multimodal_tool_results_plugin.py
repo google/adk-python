@@ -839,3 +839,85 @@ async def test_attaches_parts_to_non_transient_content_before_transient_tail(
   assert llm_request.contents[1].parts == [
       types.Part.from_text(text="dynamic instruction")
   ]
+
+
+@pytest.mark.parametrize("retention", ["next_model_call", "session"])
+@pytest.mark.asyncio
+async def test_does_not_attach_parts_to_model_turn_before_transient_tail(
+    retention: str,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """A request ending in a model reply and a transient instruction gets a new user turn."""
+  plugin = MultimodalToolResultsPlugin(retention=retention)
+  text_part = types.Part(text="tool output part")
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[text_part],
+  )
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  user_turn = types.Content(
+      role="user", parts=[types.Part.from_text(text="hi")]
+  )
+  model_turn = types.Content(
+      role="model", parts=[types.Part.from_text(text="previous reply")]
+  )
+  transient = types.Content(
+      role="user", parts=[types.Part.from_text(text="dynamic instruction")]
+  )
+  llm_request = LlmRequest(contents=[user_turn, model_turn])
+  llm_request._insert_transient_user_content([transient])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert [c.role for c in llm_request.contents] == [
+      "user",
+      "model",
+      "user",
+      "user",
+  ]
+  assert model_turn.parts == [types.Part.from_text(text="previous reply")]
+  assert llm_request.contents[2].parts == [text_part]
+  assert llm_request.contents[3] is transient
+  assert transient.parts == [types.Part.from_text(text="dynamic instruction")]
+
+
+@pytest.mark.parametrize("retention", ["next_model_call", "session"])
+@pytest.mark.asyncio
+async def test_only_transient_contents_gets_new_user_turn_first(
+    retention: str,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """With only transient contents, the parts go in a new leading user turn."""
+  plugin = MultimodalToolResultsPlugin(retention=retention)
+  text_part = types.Part(text="tool output part")
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[text_part],
+  )
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  transient = types.Content(
+      role="user", parts=[types.Part.from_text(text="dynamic instruction")]
+  )
+  llm_request = LlmRequest(contents=[])
+  llm_request._insert_transient_user_content([transient])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [text_part]
+  assert llm_request.contents[1] is transient
+  assert transient.parts == [types.Part.from_text(text="dynamic instruction")]

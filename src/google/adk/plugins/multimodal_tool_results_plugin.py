@@ -51,6 +51,34 @@ def _is_carried_by_the_framework(value: object) -> bool:
   return _as_function_response_part(value) is not None
 
 
+def _attach_to_user_turn(
+    llm_request: LlmRequest, parts: list[types.Part]
+) -> None:
+  """Adds ``parts`` to the latest user turn that ADK did not insert.
+
+  Transient contents (such as a routed dynamic instruction) are skipped. If
+  the latest remaining content is not a user turn, for example the agent's
+  own previous reply, a new user content is inserted right after it, so the
+  parts never become part of a model turn and stay ahead of the transient
+  contents.
+  """
+  target = _last_non_transient_content(llm_request)
+  if target is not None and target.role == "user":
+    if target.parts is None:
+      target.parts = []
+    target.parts += parts
+    return
+  insert_index = (
+      0
+      if target is None
+      else next(i for i, c in enumerate(llm_request.contents) if c is target)
+      + 1
+  )
+  llm_request.contents.insert(
+      insert_index, types.Content(role="user", parts=list(parts))
+  )
+
+
 class MultimodalToolResultsPlugin(BasePlugin):
   """A plugin that lets a function tool return parts directly.
 
@@ -197,23 +225,13 @@ class MultimodalToolResultsPlugin(BasePlugin):
         callback_context.state.update({current_turn_key: []})
 
       if parts_to_attach:
-        last_content = (
-            _last_non_transient_content(llm_request) or llm_request.contents[-1]
-        )
-        if last_content.parts is None:
-          last_content.parts = []
-        last_content.parts += parts_to_attach
+        _attach_to_user_turn(llm_request, parts_to_attach)
 
     else:
       # Default mode
       temp_key = PARTS_RETURNED_BY_TOOLS_ID
       if temp_parts := callback_context.state.get(temp_key, None):
-        last_content = (
-            _last_non_transient_content(llm_request) or llm_request.contents[-1]
-        )
-        if last_content.parts is None:
-          last_content.parts = []
-        last_content.parts += temp_parts
+        _attach_to_user_turn(llm_request, temp_parts)
         callback_context.state.update({temp_key: []})
 
     return None
