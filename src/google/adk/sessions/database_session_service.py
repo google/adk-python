@@ -87,6 +87,9 @@ _STALE_SESSION_ERROR_MESSAGE = (
     "Please reload the session before appending more events."
 )
 
+_MISSING = object()
+"""Marks a state key that a session did not have."""
+
 _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
@@ -975,24 +978,98 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    await self.prepare_tables()
     if event.partial:
       return event
+    return (await self.append_events(session, [event]))[0]
 
-    # Apply temp state to in-memory session before trimming, so that
-    # subsequent agents within the same invocation can read temp values.
-    self._apply_temp_state(session, event)
-    # Trim temp state before persisting
-    event = self._trim_temp_delta_state(event)
+  @override
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends events to a session in one transaction.
+
+    Has the same effect on `session` and the store as calling `append_event`
+    for each event, but checks for a stale session once and commits once, so
+    the events are stored all or none. Partial events are returned unchanged
+    and not stored, as `append_event` does.
+
+    If the events are not stored, `session` and the events are left as they
+    were, `temp:` state included, so the same events can be sent again.
+
+    Raises:
+      StaleSessionError: The session was modified in storage since it was
+        loaded. No event is stored.
+    """
+    await self.prepare_tables()
+    # The session's temp: values and the events' state deltas before this
+    # call, to put back if the events are not stored.
+    temp_state_before: dict[str, Any] = {}
+    state_deltas_before: list[tuple[Event, dict[str, Any]]] = []
+    processed: list[Event] = []
+    for event in events:
+      if not event.partial:
+        if event.actions and event.actions.state_delta:
+          state_deltas_before.append((event, event.actions.state_delta))
+          for key in event.actions.state_delta:
+            if key.startswith(State.TEMP_PREFIX):
+              temp_state_before.setdefault(
+                  key, session.state.get(key, _MISSING)
+              )
+        # Apply temp state to in-memory session before trimming, so that
+        # subsequent agents within the same invocation can read temp values.
+        self._apply_temp_state(session, event)
+        # Trim temp state before persisting
+        event = self._trim_temp_delta_state(event)
+      processed.append(event)
+    to_store = [event for event in processed if not event.partial]
+    if not to_store:
+      return processed
+
+    try:
+      await self._store_events(session, to_store)
+    except BaseException:
+      for key, value in temp_state_before.items():
+        if value is _MISSING:
+          session.state.pop(key, None)
+        else:
+          session.state[key] = value
+      for event, state_delta in state_deltas_before:
+        event.actions.state_delta = state_delta
+      raise
+
+    # Also update the in-memory session
+    for event in to_store:
+      self._commit_event_to_session(session, event)
+    return processed
+
+  async def _store_events(
+      self, session: Session, to_store: list[Event]
+  ) -> None:
+    """Stores the events in one transaction, after checking for staleness.
+
+    Raises:
+      StaleSessionError: The session was modified in storage since it was
+        loaded. No event is stored.
+    """
 
     # 1. Validate the session has not gone stale.
-    # 2. Update session attributes based on event config.
-    # 3. Store the new event.
+    # 2. Update session attributes based on the events.
+    # 3. Store the new events.
     schema = self._get_schema_classes()
     use_row_level_locking = self._supports_row_level_locking()
 
-    state_delta = event.actions.state_delta if event.actions.state_delta else {}
-    state_deltas = _session_util.extract_json_safe_state_delta(state_delta)
+    # Merged in order, as one append per event would.
+    state_deltas: dict[str, dict[str, Any]] = {
+        "app": {},
+        "user": {},
+        "session": {},
+    }
+    for event in to_store:
+      event_deltas = _session_util.extract_json_safe_state_delta(
+          event.actions.state_delta if event.actions.state_delta else {}
+      )
+      for scope, delta in event_deltas.items():
+        state_deltas[scope].update(delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
 
@@ -1083,11 +1160,15 @@ class DatabaseSessionService(BaseSessionService):
         if state_deltas["session"]:
           storage_session.state.update(state_deltas["session"])
 
-        update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
+        # The session's update time is that of its last appended event.
+        update_time = datetime.fromtimestamp(
+            to_store[-1].timestamp, timezone.utc
+        )
         if self._uses_naive_datetime():
           update_time = update_time.replace(tzinfo=None)
         storage_session.update_time = update_time
-        sql_session.add(schema.StorageEvent.from_event(session, event))
+        for event in to_store:
+          sql_session.add(schema.StorageEvent.from_event(session, event))
 
         # Read revision fields before commit. Post-commit ORM attribute access
         # can lazy-load expired columns and trigger MissingGreenlet with asyncpg
@@ -1098,9 +1179,6 @@ class DatabaseSessionService(BaseSessionService):
 
         session.last_update_time = last_update_time
         session._storage_update_marker = storage_update_marker
-
-    # Also update the in-memory session
-    return self._commit_event_to_session(session, event)
 
   async def close(self) -> None:
     """Disposes the SQLAlchemy engine and closes pooled connections."""

@@ -2627,6 +2627,44 @@ async def test_mock_store_with_a_batch_store_spec_is_batched():
   assert [e.id for e in store.append_events.await_args.args[1]] == ['e1', 'e2']
 
 
+async def test_database_store_gets_queued_events_in_one_batch():
+  """`DatabaseSessionService` takes batches, so queued events share a call."""
+  database = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service = BufferedSessionService(
+      database,
+      config=BufferedSessionServiceConfig(
+          max_write_delay=datetime.timedelta(hours=1)
+      ),
+  )
+  session = await _create(service)
+  start = session.last_update_time
+  events = [
+      _event(event_id, k=i).model_copy(update={'timestamp': start + i})
+      for i, event_id in enumerate(['e1', 'e2', 'e3'], start=1)
+  ]
+
+  with mock.patch.object(
+      database, 'append_events', wraps=database.append_events
+  ) as append_events:
+    for event in events:
+      await service.append_event(session, event)
+    await _flush(service)
+
+  append_events.assert_awaited_once()
+  assert [e.id for e in append_events.await_args.args[1]] == [
+      'e1',
+      'e2',
+      'e3',
+  ]
+  stored = await database.get_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+  assert [e.id for e in stored.events] == ['e1', 'e2', 'e3']
+  assert stored.state['k'] == 3
+  await service.aclose()
+  await database.close()
+
+
 async def test_flush_failed_batch_is_retried_whole():
   """A batch that fails once is sent again whole and stored once."""
   store = _BatchStore()
