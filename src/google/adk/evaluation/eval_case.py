@@ -120,6 +120,14 @@ class Invocation(EvalBaseModel):
   creation_timestamp: float = 0.0
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
 
+  inference_call_count: int | None = Field(default=None, ge=0)
+  """Number of model requests reconstructed from streamed event boundaries.
+
+  Set during session-event conversion, before turn completion markers are
+  removed. None keeps event-based counting for older eval files and unary
+  invocations. Usage and intermediate content remain on their original events.
+  """
+
   duration: float | None = None
   """Wall-clock seconds this invocation took, measured while it ran.
 
