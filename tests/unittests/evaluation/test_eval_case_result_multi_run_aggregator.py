@@ -1804,6 +1804,30 @@ def test_pass_k_criteria_without_threshold_only_report():
   assert aggregated.final_eval_status == EvalStatus.PASSED
 
 
+def test_pass_at_one_meets_one_in_five_threshold() -> None:
+  runs = [
+      _judged_run(i, a=score)
+      for i, score in enumerate([1.0, 0.0, 0.0, 0.0, 0.0])
+  ]
+  multi_run_config = MultiRunConfig(
+      cross_run_scoring=MultiRunCriterion(method="pass_rate", threshold=0.2),
+      cross_run_criteria=[
+          PassKMultiRunCriterion(method="pass_at_k", k=1, threshold=0.2)
+      ],
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  (result,) = aggregated.cross_run_results
+  assert (result.value, result.status, aggregated.final_eval_status) == (
+      0.2,
+      EvalStatus.PASSED,
+      EvalStatus.PASSED,
+  )
+
+
 def test_pass_hat_k_with_threshold_fails_the_case_below_it():
   """A pass^k criterion with a threshold judges the case like pass_rate."""
   multi_run_config = MultiRunConfig(
