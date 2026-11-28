@@ -227,13 +227,111 @@ async def send_to_model(
       await llm_connection._send_content(content, partial=live_request.partial)
 
 
+async def _send_to_model_or_close(
+    flow: BaseLlmFlow,
+    llm_connection: BaseLlmConnection,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Runs `send_to_model`, closing the connection if it fails.
+
+  The send half is the only reader of the live request queue. Once it fails,
+  nothing reaches the model again, not even the caller's close request, and
+  the receive half would wait on the connection until the server ended the
+  session. Closing the connection ends the receive half now, and
+  `run_live_flow` raises the send half's error when it awaits this task. If
+  the close fails, the receive half still stops, since it watches this task
+  (see `_receive_until_send_fails`).
+  """
+  try:
+    await send_to_model(flow, llm_connection, invocation_context, llm_request)
+  except Exception:
+    try:
+      await llm_connection.close()
+    except asyncio.CancelledError:
+      # The run cancels this task once the receive half ends, which this
+      # close can cause before it returns. The task must still end with the
+      # send half's error, or the run would read the close as a clean end.
+      pass
+    except Exception:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to close the live connection after the send half failed.',
+          exc_info=True,
+      )
+    raise
+
+
+def _send_failed(send_task: asyncio.Task[None]) -> bool:
+  """Whether the send half ended with an error, not by returning or a cancel."""
+  return (
+      send_task.done()
+      and not send_task.cancelled()
+      and send_task.exception() is not None
+  )
+
+
+async def _receive_until_send_fails(
+    llm_connection: BaseLlmConnection,
+    send_task: asyncio.Task[None],
+) -> AsyncGenerator[LlmResponse, None]:
+  """Yields from `llm_connection.receive()` until the send half fails.
+
+  `_send_to_model_or_close` closes the connection when the send half fails,
+  which normally ends `receive()`. But the close can fail, or return, without
+  ending it, and nothing else would end the wait. So once the send half has
+  failed, this stops waiting on the connection and raises the send half's
+  error.
+
+  Only the wait for the next response is ever cut short, never code that runs
+  between responses. `receive()` still runs in the caller's task, not in a
+  task per response, so it sees the same contextvars, such as the current
+  span.
+  """
+  wait: Optional[asyncio.Timeout] = None
+
+  def _stop_waiting(_: asyncio.Task[None]) -> None:
+    if wait is not None and _send_failed(send_task):
+      wait.reschedule(asyncio.get_running_loop().time())
+
+  send_task.add_done_callback(_stop_waiting)
+  try:
+    async with Aclosing(llm_connection.receive()) as responses:
+      while not _send_failed(send_task):
+        # A timeout with no deadline fires only when `_stop_waiting` moves its
+        # deadline to now. It then cancels just this wait, and tells that
+        # cancellation apart from one meant for the caller, which propagates.
+        try:
+          async with asyncio.timeout(None) as wait:
+            response = await anext(responses)
+        except StopAsyncIteration:
+          return
+        except TimeoutError:
+          if not _send_failed(send_task):
+            raise
+          break
+        finally:
+          wait = None
+        yield response
+    # Raised outside the `except` above, so the error is not chained to the
+    # timeout.
+    await send_task
+  finally:
+    send_task.remove_done_callback(_stop_waiting)
+
+
 async def receive_from_model(
     flow: BaseLlmFlow,
     llm_connection: BaseLlmConnection,
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
+    *,
+    send_task: Optional[asyncio.Task[None]] = None,
 ) -> AsyncGenerator[Event, None]:
-  """Receive data from model and process events using BaseLlmConnection."""
+  """Receive data from model and process events using BaseLlmConnection.
+
+  If `send_task`, the run's send half, fails, this raises its error instead
+  of waiting on the connection.
+  """
   run_config = _require_run_config(invocation_context)
   realtime_cache_manager = flow._realtime_cache_manager
 
@@ -261,7 +359,11 @@ async def receive_from_model(
   turn_output_transcription = ''
   while True:
     received_any = False
-    async with Aclosing(llm_connection.receive()) as agen:
+    async with Aclosing(
+        llm_connection.receive()
+        if send_task is None
+        else _receive_until_send_fails(llm_connection, send_task)
+    ) as agen:
       async for llm_response in agen:
         received_any = True
         if llm_response.live_session_resumption_update:
@@ -706,7 +808,7 @@ async def run_live_flow(
               )
 
           send_task = asyncio.create_task(
-              send_to_model(
+              _send_to_model_or_close(
                   flow, llm_connection, invocation_context, llm_request
               )
           )
@@ -721,6 +823,7 @@ async def run_live_flow(
                         llm_connection,
                         invocation_context,
                         llm_request,
+                        send_task=send_task,
                     ),
                     function_response_queue,
                 )
