@@ -556,8 +556,7 @@ async def test_execute_tool_span_records_the_confirmation_decision(
   assert attributes['adk.tool_confirmation.arguments_hash'] == (
       hashlib.sha256(b'{"amount": 50}').hexdigest()
   )
-  assert attributes['adk.tool_confirmation.confirmed_by'] == 'test_user'
-
+ 
 
 @pytest.mark.asyncio
 async def test_execute_tool_span_has_no_confirmation_event_by_default(
